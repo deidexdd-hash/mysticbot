@@ -6,11 +6,8 @@ import json
 import random
 import re
 from datetime import datetime
-from io import BytesIO
-from typing import List, Dict, Optional
-from urllib.parse import quote
+from typing import List, Dict, Optional, Tuple
 
-import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
@@ -19,7 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiohttp import web, ClientSession, ClientTimeout
 from dotenv import load_dotenv
 from groq import AsyncGroq
-from bs4 import BeautifulSoup
+import httpx
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
@@ -62,85 +59,101 @@ class ProfileStates(StatesGroup):
     waiting_for_birthdate = State()
     waiting_for_gender = State()
 
-# --- КОЛЛЕКТОР ГОРОСКОПОВ ---
+# --- КОЛЛЕКТОР ГОРОСКОПОВ БЕЗ BeautifulSoup ---
 class HoroscopeCollector:
     def __init__(self):
-        self.session = None
-        self.zodiac_signs = {
+        self.client = None
+        self.zodiac_map = {
             'овен': ['aries', 'oven'],
             'телец': ['taurus', 'telec'],
-            'близнецы': ['gemini', 'bliznecy', 'bliznetsy'],
+            'близнецы': ['gemini', 'bliznecy'],
             'рак': ['cancer', 'rak'],
             'лев': ['leo', 'lev'],
             'дева': ['virgo', 'deva'],
             'весы': ['libra', 'vesy'],
             'скорпион': ['scorpio', 'skorpion'],
-            'стрелец': ['sagittarius', 'strelets', 'strelec'],
+            'стрелец': ['sagittarius', 'strelec'],
             'козерог': ['capricorn', 'kozerog'],
             'водолей': ['aquarius', 'vodoley'],
             'рыбы': ['pisces', 'ryby']
         }
         
-    async def init_session(self):
-        if not self.session:
-            timeout = ClientTimeout(total=15)
-            self.session = ClientSession(timeout=timeout)
+    async def init_client(self):
+        if not self.client:
+            self.client = httpx.AsyncClient(timeout=30.0)
     
-    async def close_session(self):
-        if self.session:
-            await self.session.close()
-            self.session = None
+    async def close_client(self):
+        if self.client:
+            await self.client.aclose()
+            self.client = None
+    
+    def _extract_text_from_html(self, html: str, patterns: List[str]) -> Optional[str]:
+        """Извлекает текст из HTML с помощью регулярных выражений"""
+        for pattern in patterns:
+            match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
+            if match:
+                text = match.group(1)
+                # Очищаем от HTML тегов
+                text = re.sub(r'<[^>]+>', '', text)
+                text = re.sub(r'\s+', ' ', text).strip()
+                if len(text) > 50:
+                    return text[:2000]  # Ограничиваем длину
+        return None
     
     async def fetch_horoscope_rambler(self, sign_rus: str) -> Optional[str]:
         """Парсинг с horoscopes.rambler.ru"""
         try:
-            sign_en = self.zodiac_signs.get(sign_rus.lower(), [sign_rus.lower()])[0]
+            sign_en = self.zodiac_map.get(sign_rus.lower(), [sign_rus.lower()])[0]
             url = f"https://horoscopes.rambler.ru/{sign_en}/"
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
-            async with self.session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Ищем основной текст гороскопа
-                    content_div = soup.find('div', {'class': '_1QBrg'})
-                    if content_div:
-                        paragraphs = content_div.find_all('p')
-                        if paragraphs:
-                            text = ' '.join([p.get_text(strip=True) for p in paragraphs])
-                            return f"📰 **Rambler.ru**: {text}\n"
+            response = await self.client.get(url, headers=headers)
+            if response.status_code == 200:
+                html = response.text
+                
+                # Паттерны для поиска текста гороскопа
+                patterns = [
+                    r'<div[^>]*class="[^"]*_1QBrg[^"]*"[^>]*>(.*?)</div>',
+                    r'<article[^>]*>(.*?)</article>',
+                    r'<div[^>]*class="[^"]*content[^"]*"[^>]*>(.*?)</div>'
+                ]
+                
+                text = self._extract_text_from_html(html, patterns)
+                if text:
+                    return f"📰 **Rambler.ru**: {text}\n"
         except Exception as e:
-            logger.error(f"Ошибка парсинга Rambler: {e}")
+            logger.error(f"Ошибка Rambler: {e}")
         return None
     
     async def fetch_horoscope_mail(self, sign_rus: str) -> Optional[str]:
         """Парсинг с horo.mail.ru"""
         try:
-            sign_en = self.zodiac_signs.get(sign_rus.lower(), [sign_rus.lower()])[0]
+            sign_en = self.zodiac_map.get(sign_rus.lower(), [sign_rus.lower()])[0]
             url = f"https://horo.mail.ru/prediction/{sign_en}/today/"
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
-            async with self.session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Ищем блок с прогнозом
-                    article_div = soup.find('div', {'class': 'article__text'})
-                    if article_div:
-                        paragraphs = article_div.find_all('p')
-                        if paragraphs:
-                            text = ' '.join([p.get_text(strip=True) for p in paragraphs[:3]])
-                            return f"📧 **Mail.ru**: {text}\n"
+            response = await self.client.get(url, headers=headers)
+            if response.status_code == 200:
+                html = response.text
+                
+                # Паттерны для Mail.ru
+                patterns = [
+                    r'<div[^>]*class="[^"]*article__item[^"]*"[^>]*>(.*?)</div>',
+                    r'<div[^>]*class="[^"]*article__text[^"]*"[^>]*>(.*?)</div>',
+                    r'<p[^>]*class="[^"]*text[^"]*"[^>]*>(.*?)</p>'
+                ]
+                
+                text = self._extract_text_from_html(html, patterns)
+                if text:
+                    return f"📧 **Mail.ru**: {text}\n"
         except Exception as e:
-            logger.error(f"Ошибка парсинга Mail.ru: {e}")
+            logger.error(f"Ошибка Mail.ru: {e}")
         return None
     
     async def fetch_horoscope_1001(self, sign_rus: str) -> Optional[str]:
@@ -168,106 +181,115 @@ class HoroscopeCollector:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
-            async with self.session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Ищем текст гороскопа
-                    content_div = soup.find('div', {'class': 'horoscope_text'})
-                    if content_div:
-                        text = content_div.get_text(strip=True)
-                        return f"🔢 **1001goroskop.ru**: {text}\n"
+            response = await self.client.get(url, headers=headers)
+            if response.status_code == 200:
+                html = response.text
+                
+                # Паттерны для 1001goroskop
+                patterns = [
+                    r'<div[^>]*class="[^"]*horoscope_text[^"]*"[^>]*>(.*?)</div>',
+                    r'<p[^>]*class="[^"]*text[^"]*"[^>]*>(.*?)</p>'
+                ]
+                
+                text = self._extract_text_from_html(html, patterns)
+                if text:
+                    return f"🔢 **1001goroskop.ru**: {text}\n"
         except Exception as e:
-            logger.error(f"Ошибка парсинга 1001goroskop: {e}")
+            logger.error(f"Ошибка 1001goroskop: {e}")
         return None
     
-    async def fetch_horoscope_astromeridian(self, sign_rus: str) -> Optional[str]:
-        """Парсинг с astromeridian.ru"""
-        try:
-            sign_ru_for_url = sign_rus.lower()
-            url = f"https://www.astromeridian.ru/horoscope/{sign_ru_for_url}.html"
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            async with self.session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Ищем блок с ежедневным гороскопом
-                    for tag in soup.find_all(['p', 'div']):
-                        text = tag.get_text(strip=True)
-                        if 'сегодня' in text.lower() and len(text) > 100:
-                            return f"🌙 **Astromeridian.ru**: {text}\n"
-        except Exception as e:
-            logger.error(f"Ошибка парсинга Astromeridian: {e}")
-        return None
-    
-    async def fetch_horoscope_joinfo(self, sign_rus: str) -> Optional[str]:
-        """API-подобный запрос к joinfo.ru"""
+    async def fetch_horoscope_joinfo_api(self, sign_rus: str) -> Optional[str]:
+        """Используем API joinfo.ru"""
         try:
             sign_mapping = {
-                'овен': 'oven',
-                'телец': 'telec',
-                'близнецы': 'bliznecy',
-                'рак': 'rak',
-                'лев': 'lev',
-                'дева': 'deva',
-                'весы': 'vesy',
-                'скорпион': 'skorpion',
-                'стрелец': 'strelec',
-                'козерог': 'kozerog',
-                'водолей': 'vodolei',
-                'рыбы': 'ryby'
+                'овен': 'aries',
+                'телец': 'taurus',
+                'близнецы': 'gemini',
+                'рак': 'cancer',
+                'лев': 'leo',
+                'дева': 'virgo',
+                'весы': 'libra',
+                'скорпион': 'scorpio',
+                'стрелец': 'sagittarius',
+                'козерог': 'capricorn',
+                'водолей': 'aquarius',
+                'рыбы': 'pisces'
             }
             
-            sign_key = sign_mapping.get(sign_rus.lower(), sign_rus.lower())
-            url = f"https://api.jinfo.ru/v1/horoscope/daily/{sign_key}"
+            sign_en = sign_mapping.get(sign_rus.lower(), sign_rus.lower())
+            url = f"https://api.jinfo.ru/v1/horoscope/daily/{sign_en}"
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Accept': 'application/json'
             }
             
-            async with self.session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if 'text' in data:
-                        return f"📊 **JoInfo.ru**: {data['text']}\n"
+            response = await self.client.get(url, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                if 'text' in data:
+                    text = data['text']
+                    return f"📊 **JoInfo.ru**: {text}\n"
         except Exception as e:
-            logger.error(f"Ошибка парсинга JoInfo: {e}")
+            logger.error(f"Ошибка JoInfo API: {e}")
         return None
     
-    async def collect_all_horoscopes(self, sign_rus: str) -> List[str]:
-        """Сбор всех доступных гороскопов"""
-        await self.init_session()
+    async def fetch_horoscope_generic(self, sign_rus: str) -> Optional[str]:
+        """Резервный источник - генерируем базовый прогноз"""
+        themes = [
+            "Сегодня день для реализации планов. Сосредоточьтесь на главном.",
+            "Эмоции могут быть на высоте. Найдите творческий выход для них.",
+            "Хороший день для общения и новых знакомств.",
+            "Время подведения итогов и планирования будущего.",
+            "Проявите гибкость в решении задач - это приведет к успеху.",
+            "День благоприятен для финансовых операций и переговоров."
+        ]
         
-        tasks = [
+        advice = [
+            "Прислушайтесь к своей интуиции.",
+            "Не бойтесь просить о помощи.",
+            "Делайте перерывы в работе.",
+            "Уделите время саморазвитию.",
+            "Будьте открыты новым возможностям."
+        ]
+        
+        text = f"{random.choice(themes)} {random.choice(advice)}"
+        return f"🌟 **Общий прогноз**: {text}\n"
+    
+    async def collect_horoscopes(self, sign_rus: str) -> List[str]:
+        """Сбор гороскопов из всех доступных источников"""
+        await self.init_client()
+        
+        # Пробуем собрать из внешних источников
+        sources = [
             self.fetch_horoscope_rambler(sign_rus),
             self.fetch_horoscope_mail(sign_rus),
             self.fetch_horoscope_1001(sign_rus),
-            self.fetch_horoscope_astromeridian(sign_rus),
-            self.fetch_horoscope_joinfo(sign_rus)
+            self.fetch_horoscope_joinfo_api(sign_rus)
         ]
         
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = []
+        for source in sources:
+            try:
+                result = await source
+                if result:
+                    results.append(result)
+                    logger.info(f"Успешно получен гороскоп от источника")
+            except Exception as e:
+                logger.error(f"Ошибка в источнике: {e}")
+                continue
         
-        valid_results = []
-        for result in results:
-            if isinstance(result, str) and len(result.strip()) > 50:
-                valid_results.append(result)
-            elif isinstance(result, Exception):
-                logger.error(f"Ошибка при сборе гороскопа: {result}")
+        # Если ни один источник не сработал, используем генерацию
+        if not results:
+            generic = await self.fetch_horoscope_generic(sign_rus)
+            if generic:
+                results.append(generic)
         
-        logger.info(f"Собрано {len(valid_results)} гороскопов для {sign_rus}")
-        return valid_results
+        return results
 
 # --- ЛОГИКА РАСЧЕТА ---
-def get_zodiac(date_obj: datetime) -> tuple:
-    """Возвращает знак зодиака и символ"""
+def get_zodiac(date_obj: datetime) -> Tuple[str, str, str]:
+    """Возвращает знак зодиака"""
     d, m = date_obj.day, date_obj.month
     
     zodiacs = [
@@ -292,18 +314,14 @@ def get_zodiac(date_obj: datetime) -> tuple:
     return "♐ Стрелец", "Стрелец", "стрелец"
 
 def get_psychomatrix(birthdate_str: str):
-    """Рассчитывает психоматрицу по дате рождения"""
+    """Рассчитывает психоматрицу"""
     clean = birthdate_str.replace(".", "")
     digits = [int(d) for d in clean]
     
-    # 1 рабочее число
     w1 = sum(digits)
-    # 2 рабочее число
     w2 = sum(int(d) for d in str(w1))
-    # 3 рабочее число
     first_digit = int(clean[0])
     w3 = w1 - (2 * first_digit)
-    # 4 рабочее число
     w4 = sum(int(d) for d in str(abs(w3)))
     
     all_numbers = clean + str(w1) + str(w2) + str(w3) + str(w4)
@@ -314,7 +332,6 @@ def get_psychomatrix(birthdate_str: str):
         count = full_list.count(i)
         matrix[i] = str(i) * count if count > 0 else f"{i}0"
     
-    # Специальные числа
     special = []
     work_nums = [w1, w2, w3, w4]
     for sn in [11, 12, 22]:
@@ -336,21 +353,20 @@ def get_main_kb():
 
 # --- УТИЛИТЫ ---
 async def download_image(url: str) -> Optional[bytes]:
-    """Скачивает изображение по URL"""
-    timeout = ClientTimeout(total=20)
+    """Скачивает изображение"""
     try:
-        async with ClientSession(timeout=timeout) as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    return await response.read()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                return response.content
     except Exception as e:
         logger.error(f"Ошибка загрузки изображения: {e}")
     return None
 
-async def send_image_safely(message: types.Message, image_data: bytes, caption: str):
+async def send_image_safely(message: types.Message, image_data: Optional[bytes], caption: str):
     """Безопасная отправка изображения"""
     try:
-        if image_data and len(image_data) > 1000:  # Проверяем что изображение не пустое
+        if image_data and len(image_data) > 1000:
             photo = BufferedInputFile(image_data, filename="horoscope.jpg")
             await message.answer_photo(photo=photo, caption=caption)
             return True
@@ -375,7 +391,7 @@ async def ask_groq(prompt: str, system_prompt: str = None) -> str:
         completion = await groq_client.chat.completions.create(
             messages=messages,
             model="llama-3.3-70b-versatile",
-            temperature=0.8,
+            temperature=0.7,
             max_tokens=1500
         )
         
@@ -390,9 +406,9 @@ async def start(message: types.Message, state: FSMContext):
     await message.answer(
         "✨ *Добро пожаловать в Оракул Рода!*\n\n"
         "Я создаю персонализированные прогнозы на основе:\n"
-        "• Вашей даты рождения\n"
-        "• Актуальных гороскопов из 5+ источников\n"
-        "• Вашей психоматрицы Пифагора\n\n"
+        "• Вашей даты рождения и знака зодиака\n"
+        "• Актуальных гороскопов из нескольких источников\n"
+        "• Интеллектуального анализа через AI\n\n"
         "Для начала, укажи свою дату рождения в формате *ДД.ММ.ГГГГ*:",
         parse_mode="Markdown"
     )
@@ -441,7 +457,7 @@ async def process_gender(callback: types.CallbackQuery, state: FSMContext):
     
     # Рассчитываем знак зодиака
     dt = datetime.strptime(birthdate, "%d.%m.%Y")
-    zodiac_full, zodiac_name, zodiac_key = get_zodiac(dt)
+    zodiac_full, zodiac_name, _ = get_zodiac(dt)
     
     await callback.message.edit_text(
         f"✅ *Профиль сохранен!*\n\n"
@@ -473,8 +489,7 @@ async def show_profile(message: types.Message):
         f"👤 Пол: {user_data['gender']}\n"
         f"♊ Знак зодиака: {zodiac_full}\n"
         f"📊 Число судьбы: {sum(int(d) for d in user_data['birthdate'].replace('.', '')) % 9 or 9}\n\n"
-        f"*Зарегистрирован:* {user_data.get('registered_at', 'Неизвестно')}\n\n"
-        f"Используй /start чтобы изменить данные."
+        f"*Зарегистрирован:* {user_data.get('registered_at', 'Неизвестно')}"
     )
     
     await message.answer(profile_text, parse_mode="Markdown")
@@ -488,8 +503,8 @@ async def daily_horoscope(message: types.Message):
         await message.answer("Сначала настрой профиль через /start")
         return
     
-    # Отправляем сообщение о начале сбора данных
-    status_msg = await message.answer("🔮 *Собираю актуальные прогнозы...*\n\nЭто займет 10-15 секунд.", parse_mode="Markdown")
+    # Отправляем сообщение о начале
+    status_msg = await message.answer("🔮 *Собираю актуальные прогнозы...*\n\nПодожди 10-15 секунд.", parse_mode="Markdown")
     
     try:
         # Получаем данные пользователя
@@ -499,17 +514,19 @@ async def daily_horoscope(message: types.Message):
         zodiac_full, zodiac_name, zodiac_key = get_zodiac(dt)
         
         # Шаг 1: Сбор гороскопов из сети
-        await status_msg.edit_text("📡 *Шаг 1/3:* Сбор прогнозов из 5+ источников...")
+        await status_msg.edit_text("📡 *Шаг 1/3:* Сбор прогнозов из нескольких источников...")
         
         collector = HoroscopeCollector()
-        raw_horoscopes = await collector.collect_all_horoscopes(zodiac_key)
-        await collector.close_session()
+        try:
+            raw_horoscopes = await collector.collect_horoscopes(zodiac_key)
+            logger.info(f"Собрано {len(raw_horoscopes)} гороскопов для {zodiac_name}")
+        finally:
+            await collector.close_client()
         
         if not raw_horoscopes:
-            await status_msg.edit_text("⚠️ *Не удалось собрать прогнозы из сети*\nСоздаю универсальный прогноз...")
-            raw_horoscopes_text = "Данные из внешних источников временно недоступны."
+            raw_horoscopes_text = "Не удалось собрать данные из внешних источников. Буду использовать общий прогноз."
         else:
-            raw_horoscopes_text = "\n".join(raw_horoscopes[:5])  # Берем до 5 источников
+            raw_horoscopes_text = "\n".join(raw_horoscopes)
         
         # Шаг 2: Рассчитываем психоматрицу
         await status_msg.edit_text("🔢 *Шаг 2/3:* Анализ вашей психоматрицы...")
@@ -523,23 +540,20 @@ async def daily_horoscope(message: types.Message):
         current_date = datetime.now().strftime("%d.%m.%Y %A")
         
         system_prompt = (
-            "Ты — опытный астролог и нумеролог, специализирующийся на персонализированных прогнозах. "
-            "Ты анализируешь гороскопы из разных источников, учитываешь психоматрицу Пифагора и создаешь "
-            "уникальный, точный прогноз для конкретного человека.\n\n"
-            "**Твой стиль:**\n"
+            "Ты — опытный астролог и аналитик. Твоя задача — проанализировать гороскопы из разных источников "
+            "и создать единый, персонализированный прогноз.\n\n"
+            "**Стиль ответа:**\n"
             "1. Профессиональный, но понятный язык\n"
             "2. Конкретные рекомендации по сферам жизни\n"
-            "3. Учет числовой матрицы и особых чисел\n"
-            "4. Позитивный, поддерживающий тон\n"
-            "5. Структурированный ответ с разделами\n\n"
-            "**Обязательные разделы в ответе:**\n"
-            "1. Общая тема дня\n"
+            "3. Позитивный, поддерживающий тон\n"
+            "4. Структурированный ответ с разделами\n\n"
+            "**Обязательные разделы:**\n"
+            "1. Общая тема дня (2-3 предложения)\n"
             "2. Карьера и финансы\n"
             "3. Личные отношения\n"
             "4. Здоровье и энергия\n"
-            "5. Совет дня от Рода\n"
-            "6. Особое указание (по матрице)\n\n"
-            "В конце добавь IMAGE_PROMPT: [детальное описание картинки на английском для визуализации прогноза, связанное с ключевой темой дня]"
+            "5. Совет дня\n\n"
+            "В конце добавь IMAGE_PROMPT: [описание для генерации изображения на английском, связанное с ключевой темой дня, 10-15 слов]"
         )
         
         user_prompt = (
@@ -547,20 +561,17 @@ async def daily_horoscope(message: types.Message):
             f"**ДАННЫЕ ЧЕЛОВЕКА:**\n"
             f"- Дата рождения: {birthdate}\n"
             f"- Знак зодиака: {zodiac_full}\n"
-            f"- Пол: {gender}\n"
-            f"- Матрица Пифагора:\n{matrix_view}\n"
-            f"- Особые числа: {', '.join(special) if special else 'Нет'}\n\n"
+            f"- Пол: {gender}\n\n"
             f"**СОБРАННЫЕ ПРОГНОЗЫ ИЗ СЕТИ:**\n{raw_horoscopes_text}\n\n"
+            f"**МАТРИЦА ПИФАГОРА:**\n{matrix_view}\n"
+            f"Особые числа: {', '.join(special) if special else 'нет'}\n\n"
             f"**ИНСТРУКЦИЯ:**\n"
             f"1. Проанализируй ВСЕ предоставленные прогнозы из разных источников\n"
-            f"2. Выдели ОБЩИЕ темы и ПРОТИВОРЕЧИЯ между источниками\n"
-            f"3. Учеть особенности матрицы:\n"
-            f"   - Единицы ({matrix[1]}) - характер, воля\n"
-            f"   - Восьмерки ({matrix[8]}) - связь с Родом, долг\n"
-            f"   - Особые числа: {special if special else 'нет'}\n"
-            f"4. Дай КОНКРЕТНЫЕ рекомендации\n"
-            f"5. Свяжи с кармическими задачами человека\n"
-            f"6. Будь реалистичным - укажи и вызовы, и возможности\n\n"
+            f"2. Выдели ОБЩИЕ темы и тенденции\n"
+            f"3. Если есть противоречия, укажи на них и дай взвешенную рекомендацию\n"
+            f"4. Учеть особенности знака зодиака и даты рождения\n"
+            f"5. Дай КОНКРЕТНЫЕ, практические рекомендации\n"
+            f"6. Структурируй ответ по указанным разделам\n\n"
             f"**ФОРМАТ:** Используй Markdown для форматирования, эмодзи для разделов"
         )
         
@@ -573,13 +584,14 @@ async def daily_horoscope(message: types.Message):
             img_prompt = img_prompt_part.strip()
         else:
             horoscope_text = ai_response
-            img_prompt = f"mystical astrology tarot card for {zodiac_name}, celestial energy, detailed, mystical atmosphere, digital art"
+            img_prompt = f"mystical astrology tarot card for {zodiac_name}, celestial energy, mystical atmosphere, digital art"
         
         # Удаляем статус-сообщение
         await status_msg.delete()
         
-        # Шаг 4: Генерация и отправка изображения
-        img_url = f"https://image.pollinations.ai/prompt/{quote(img_prompt)}?width=1024&height=1024&nologo=true&seed={random.randint(1, 99999)}"
+        # Генерация и отправка изображения
+        encoded_prompt = re.sub(r'[^\w\s-]', '', img_prompt).replace(' ', '%20')
+        img_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&seed={random.randint(1, 99999)}"
         
         # Скачиваем и отправляем изображение
         image_data = await download_image(img_url)
@@ -592,10 +604,9 @@ async def daily_horoscope(message: types.Message):
         final_text = (
             f"{horoscope_text}\n\n"
             f"---\n"
-            f"📊 *Ваша матрица:*\n`{matrix_view}`\n"
-            f"🔮 *Особые числа:* {', '.join(special) if special else 'Нет'}\n"
-            f"🔄 *Прогноз обновлен:* {datetime.now().strftime('%H:%M')}\n\n"
-            f"_Прогноз создан на основе анализа {len(raw_horoscopes)} источников_"
+            f"📊 *Основано на анализе {len(raw_horoscopes)} источников*\n"
+            f"🔄 *Обновлено:* {datetime.now().strftime('%H:%M')}\n"
+            f"⭐ *Ваш знак:* {zodiac_full}"
         )
         
         await message.answer(final_text, parse_mode="Markdown")
@@ -608,13 +619,18 @@ async def daily_horoscope(message: types.Message):
         except:
             pass
         
+        # Показываем пользователю простой прогноз
+        dt = datetime.strptime(user_data['birthdate'], "%d.%m.%Y")
+        zodiac_full, zodiac_name, _ = get_zodiac(dt)
+        
         error_text = (
-            "⚠️ *Произошла ошибка при создании прогноза*\n\n"
-            "Попробуйте снова через несколько минут. \n"
-            "Или используйте другие функции бота:\n"
-            "- /start - изменить профиль\n"
-            "- 🔢 Психоматрица - узнать свою матрицу\n"
-            f"\nОшибка: {str(e)[:100]}..."
+            f"✨ *Прогноз для {zodiac_full}*\n"
+            f"📅 {datetime.now().strftime('%d.%m.%Y')}\n\n"
+            f"Сегодня благоприятный день для саморазвития и планирования.\n\n"
+            f"💼 *Карьера:* Сосредоточьтесь на текущих задачах\n"
+            f"❤️ *Отношения:* Будьте открыты для общения\n"
+            f"🌿 *Здоровье:* Уделите время отдыху\n\n"
+            f"_⚠️ Полный анализ временно недоступен. Попробуйте позже._"
         )
         
         await message.answer(error_text, parse_mode="Markdown")
@@ -664,8 +680,12 @@ async def show_psychomatrix(message: types.Message):
     
     if special:
         matrix_text += f"\n**Особые числа:** {', '.join(special)}\n"
-    
-    matrix_text += f"\n**Дата рождения:** {birthdate}"
+        if '11' in special:
+            matrix_text += "11 - Духовный учитель\n"
+        if '12' in special:
+            matrix_text += "12 - Помощь людям через эзотерику\n"
+        if '22' in special:
+            matrix_text += "22 - Организаторские способности\n"
     
     await message.answer(matrix_text, parse_mode="Markdown")
 
@@ -681,10 +701,10 @@ async def help_command(message: types.Message):
         "• 🔢 Психоматрица - Ваш квадрат Пифагора\n"
         "• 🎂 Мой профиль - Информация о вас\n\n"
         "**Как это работает:**\n"
-        "1. Я собираю актуальные гороскопы из 5+ источников\n"
+        "1. Я собираю актуальные гороскопы из 4+ источников\n"
         "2. Анализирую вашу психоматрицу по дате рождения\n"
         "3. Использую AI для создания уникального прогноза\n"
-        "4. Генерирую визуализацию\n\n"
+        "4. Генерирую индивидуальную визуализацию\n\n"
         "⏱ *Обновление:* Ежедневные прогнозы обновляются каждый день"
     )
     
