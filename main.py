@@ -6,13 +6,14 @@ import json
 import random
 import urllib.parse
 from datetime import datetime
+from io import BytesIO
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiohttp import web
+from aiohttp import web, ClientSession, ClientTimeout
 from dotenv import load_dotenv
 from groq import AsyncGroq
 
@@ -66,7 +67,7 @@ MYSTIC_PERSONA = (
     "Ты — Оракул Рода. Твои ответы глубоки и метафоричны. "
     "Ты используешь данные Психоматрицы (Квадрат Пифагора) для анализа. "
     "Всегда связывай события с Родом и кармическими задачами. "
-    "Используй **Markdown** для оформления.Используйй только русский язык, проверяй ответы не содерат ли они иностранные слова и иероглифы "
+    "Используй **Markdown** для оформления. Используй только русский язык, проверяй ответы не содержат ли они иностранные слова и иероглифы. "
     "В конце ВСЕГДА добавляй: 'IMAGE_PROMPT: [fantasy mystical card description in English]'."
 )
 
@@ -133,6 +134,42 @@ def get_main_kb():
         [KeyboardButton(text="🎂 Мой профиль")]
     ], resize_keyboard=True)
 
+# --- УТИЛИТЫ ДЛЯ ИЗОБРАЖЕНИЙ ---
+async def download_image(url: str) -> bytes:
+    """Скачивает изображение по URL"""
+    timeout = ClientTimeout(total=30)
+    try:
+        async with ClientSession(timeout=timeout) as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    image_data = await response.read()
+                    if len(image_data) < 100:  # Проверяем, что это не пустой ответ
+                        logging.error(f"Слишком маленькое изображение: {len(image_data)} байт")
+                        return None
+                    return image_data
+                else:
+                    logging.error(f"Ошибка загрузки изображения: статус {response.status}")
+                    return None
+    except Exception as e:
+        logging.error(f"Ошибка при скачивании изображения: {e}")
+        return None
+
+async def send_image_safely(message: types.Message, image_data: bytes, caption: str):
+    """Безопасная отправка изображения с обработкой ошибок"""
+    try:
+        if image_data:
+            photo = BufferedInputFile(image_data, filename="horoscope.jpg")
+            await message.answer_photo(photo=photo, caption=caption)
+            return True
+        else:
+            await message.answer(caption)
+            return False
+    except Exception as e:
+        logging.error(f"Ошибка при отправке изображения: {e}")
+        # Фолбэк: отправляем только текст
+        await message.answer(caption)
+        return False
+
 # --- ХЕНДЛЕРЫ ---
 
 @dp.message(Command("start"))
@@ -187,12 +224,19 @@ async def show_matrix(message: types.Message):
     res = await ask_ai(prompt)
     await status.delete()
     
-    # Генерация картинки на основе спец. задач или главной цифры
-    img_prompt = special[0] if special else matrix[1]
+    # Генерация URL для изображения
+    img_prompt = special[0] if special else str(matrix[1])
     img_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(img_prompt)}?width=1024&height=1024&nologo=true"
     
-    await message.answer_photo(photo=img_url, caption=f"✨ **Твоя Матрица:**\n`{m_view}`", parse_mode="Markdown")
-    await message.answer(res.split("IMAGE_PROMPT:")[0], parse_mode="Markdown")
+    # Скачиваем и отправляем изображение безопасно
+    image_data = await download_image(img_url)
+    
+    caption = f"✨ **Твоя Матрица:**\n`{m_view}`"
+    await send_image_safely(message, image_data, caption)
+    
+    # Отправляем анализ
+    analysis_text = res.split("IMAGE_PROMPT:")[0] if "IMAGE_PROMPT:" in res else res
+    await message.answer(analysis_text, parse_mode="Markdown")
 
 @dp.message(F.text == "🔮 Прогноз на день")
 async def daily_horoscope(message: types.Message):
@@ -238,12 +282,25 @@ async def daily_horoscope(message: types.Message):
     res = await ask_ai(prompt)
     await status.delete()
     
-    clean_text = res.split("IMAGE_PROMPT:")[0]
-    img_prompt = res.split("IMAGE_PROMPT:")[1] if "IMAGE_PROMPT:" in res else "mystical oracle card"
+    # Извлекаем текст и промпт для изображения
+    if "IMAGE_PROMPT:" in res:
+        clean_text, img_prompt_part = res.split("IMAGE_PROMPT:")
+        img_prompt = img_prompt_part.strip()
+    else:
+        clean_text = res
+        img_prompt = f"mystical oracle card for {sign} astrology"
     
-    img_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(img_prompt)}?width=1024&height=1024&nologo=true&seed={random.randint(1,999)}"
+    # Генерация URL для изображения с случайным seed
+    img_url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(img_prompt)}?width=1024&height=1024&nologo=true&seed={random.randint(1, 9999)}"
     
-    await message.answer_photo(photo=img_url, caption=f"🌟 Прогноз для знака {sign}")
+    # Скачиваем изображение
+    image_data = await download_image(img_url)
+    
+    # Отправляем изображение с безопасной обработкой ошибок
+    caption = f"🌟 Прогноз для знака {sign}"
+    await send_image_safely(message, image_data, caption)
+    
+    # Отправляем текст прогноза
     await message.answer(clean_text, parse_mode="Markdown")
 
 async def ask_ai(prompt):
@@ -267,7 +324,14 @@ async def show_profile(message: types.Message):
     if not user_data:
         await message.answer("Профиль пуст. Нажми /start")
     else:
-        await message.answer(f"📅 Дата: {user_data['birthdate']}\n👤 Пол: {user_data['gender']}\n\nЧтобы изменить, нажми /start")
+        dt = datetime.strptime(user_data['birthdate'], "%d.%m.%Y")
+        sign = get_zodiac(dt)
+        await message.answer(
+            f"📅 Дата рождения: {user_data['birthdate']}\n"
+            f"👤 Пол: {user_data['gender']}\n"
+            f"♊ Знак зодиака: {sign}\n\n"
+            "Чтобы изменить данные, нажми /start"
+        )
 
 # --- ВЕБ-СЕРВЕР ---
 async def handle(request):
