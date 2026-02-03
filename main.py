@@ -1,8 +1,10 @@
 import os
+import io
 import logging
 from datetime import datetime
 
-from telegram import Update
+import requests
+from telegram import Update, InputFile
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
 from matrix import calculate_matrix
@@ -33,6 +35,21 @@ def start(update: Update, context):
         "DD.MM.YYYY"
     )
 
+# --- Функция безопасной отправки изображения ---
+def send_image_safely(update: Update, image_url: str, caption: str = ""):
+    try:
+        resp = requests.get(image_url, timeout=10)
+        resp.raise_for_status()
+        image_bytes = io.BytesIO(resp.content)
+        image_bytes.name = "image.png"  # Telegram требует имя файла
+        update.message.reply_photo(photo=InputFile(image_bytes), caption=caption)
+    except requests.RequestException as e:
+        logger.error(f"Ошибка загрузки изображения: {e}")
+        update.message.reply_text("❌ Не удалось загрузить изображение. Попробуйте позже.")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке изображения: {e}")
+        update.message.reply_text("❌ Произошла ошибка при обработке изображения.")
+
 # --- Обработчик текста с датой ---
 def handle_date(update: Update, context):
     try:
@@ -54,12 +71,15 @@ def handle_date(update: Update, context):
             parse_mode="Markdown"
         )
 
+        # Пример отправки изображения
+        image_url = "https://image.pollinations.ai/prompt/mystical%20tarot%20card.png"
+        send_image_safely(update, image_url, caption="Вот ваш прогноз 🔮")
+
     except Exception as e:
         logger.error(f"Ошибка при обработке даты: {e}")
         update.message.reply_text(
             "❌ Ошибка.\nИспользуй формат DD.MM.YYYY"
         )
-
 
 def main():
     # Создаём Updater (старый синхронный API PTB 13.x)
