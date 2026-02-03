@@ -1,161 +1,111 @@
 from datetime import datetime
+from values import matrix, tasks
 
 
-def split_digits(value):
-    """Разделяет число на отдельные цифры"""
-    return [int(x) for x in str(value).replace(".", "")]
-
-
-def digit_sum(value):
-    """Суммирует цифры числа до однозначного числа"""
-    total = sum(split_digits(value))
-    while total >= 10 and total not in [11, 22, 33]:
-        total = sum(split_digits(total))
-    return total
-
-
-def calculate_matrix(date_str: str):
+def get_matrix_value(full_array, number: int) -> str:
     """
-    Расширенный расчет матрицы судьбы с дополнительными параметрами
-    date_str формат: DD.MM.YYYY
+    Абсолютно идентично getMatrixValue из App.tsx
     """
-    date = datetime.strptime(date_str, "%d.%m.%Y")
-    year = date.year
-    month = date.month
-    day = date.day
-    
-    # Разбиваем дату на цифры
-    digits = split_digits(date.strftime("%d.%m.%Y"))
-    
-    # 1-е число (Характер) - сумма всех цифр даты
-    first = sum(digits)
-    
-    # 2-е число (Душа) - сумма цифр первого числа
-    second = digit_sum(first)
-    
-    # 3-е число (Судьба)
-    if year >= 2000:
-        third = first - 19
-        extra = [1, 9]
+    count = full_array.count(number)
+
+    if count == 0:
+        key = f"{number}0"
+    elif count > 5:
+        key = str(number) * (count - 5)
     else:
-        first_day_digit = digits[0] if digits[0] != 0 else digits[1]
-        third = first - (first_day_digit * 2)
-        extra = []
-    
-    # 4-е число (Кармическая задача) - сумма цифр третьего числа
-    fourth = digit_sum(abs(third))
-    
-    # Полный массив цифр для анализа матрицы
-    full_array = (
-        digits
-        + split_digits(first)
-        + split_digits(second)
-        + extra
-        + split_digits(third)
-        + split_digits(fourth)
-    )
-    
-    # Дополнительные расчеты
-    life_path_number = digit_sum(day + month + year)
-    
-    # Число выражения (полное имя)
-    expression_number = digit_sum(sum(digits))
-    
-    # Число душевного пробуждения
-    soul_urge_number = digit_sum(month + year)
-    
-    # Число личности
-    personality_number = digit_sum(day + month)
-    
-    # Кармические долги
-    karmic_debts = []
-    for num in [13, 14, 16, 19]:
-        if str(num) in ''.join(str(d) for d in full_array):
-            karmic_debts.append(num)
-    
-    return {
-        "date": date_str,
-        "day": day,
-        "month": month,
-        "year": year,
-        "digits": digits,
-        "first": first,
-        "second": second,
-        "third": third,
-        "fourth": fourth,
-        "full": full_array,
-        "life_path": life_path_number,
-        "expression": expression_number,
-        "soul_urge": soul_urge_number,
-        "personality": personality_number,
-        "karmic_debts": karmic_debts,
-        "is_millennial": year >= 2000,
-        "day_type": "основной" if day <= 9 else "расширенный",
-    }
+        key = str(number) * count
+
+    return matrix.get(key, "—")
 
 
-def analyze_compatibility(date1: str, date2: str):
-    """
-    Анализ совместимости двух матриц
-    """
-    matrix1 = calculate_matrix(date1)
-    matrix2 = calculate_matrix(date2)
+def build_matrix_text(matrix_data):
+    full = matrix_data["full"]
+
+    text = "🔢 *МАТРИЦА СУДЬБЫ*\n\n"
     
-    compatibility_score = 0
-    matches = []
-    
-    # Сравнение основных чисел
-    if matrix1["second"] == matrix2["second"]:
-        compatibility_score += 30
-        matches.append("Души")
-    
-    if matrix1["life_path"] == matrix2["life_path"]:
-        compatibility_score += 20
-        matches.append("Жизненный путь")
-    
-    if matrix1["expression"] == matrix2["expression"]:
-        compatibility_score += 15
-        matches.append("Выражение")
-    
-    # Кармическая связь
-    if any(num in matrix1["karmic_debts"] for num in matrix2["karmic_debts"]):
-        compatibility_score += 10
-        matches.append("Кармическая связь")
-    
-    return {
-        "score": min(compatibility_score, 100),
-        "matches": matches,
-        "level": "высокая" if compatibility_score >= 50 else "средняя" if compatibility_score >= 30 else "низкая",
-        "recommendation": "Гармоничный союз" if compatibility_score >= 50 else "Требует работы" if compatibility_score >= 30 else "Кармические уроки"
-    }
+    # Красивое отображение матрицы
+    for n in range(1, 10):
+        count = full.count(n)
+        value = get_matrix_value(full, n)
+        
+        # Определяем уровень энергии
+        if count == 0:
+            level = "⚪ Отсутствует"
+        elif count == 1:
+            level = "🟡 Базовая"
+        elif count == 2:
+            level = "🟠 Усиленная"
+        elif count == 3:
+            level = "🔴 Сильная"
+        elif count >= 4:
+            level = "🟣 Очень сильная"
+        
+        text += f"*{n}* ({count}шт, {level}):\n"
+        text += f"{value}\n\n"
+
+    return text
 
 
-def get_year_forecast(date_str: str, target_year: int = None):
-    """
-    Прогноз на год по матрице
-    """
-    matrix_data = calculate_matrix(date_str)
+def build_tasks_text(matrix_data):
+    soul_task = tasks.get(str(matrix_data["second"]), "")
+    clan_task = tasks.get(str(matrix_data["fourth"]), "")
+
+    text = "🎯 *КАРМИЧЕСКИЕ ЗАДАЧИ*\n\n"
     
-    if target_year is None:
-        target_year = datetime.now().year
+    if soul_task:
+        text += f"*Душа (число {matrix_data['second']}):*\n"
+        text += f"✨ {soul_task}\n\n"
     
-    personal_year = digit_sum(matrix_data["day"] + matrix_data["month"] + target_year)
+    if clan_task:
+        text += f"*Род (число {matrix_data['fourth']}):*\n"
+        text += f"🏛 {clan_task}\n\n"
     
-    forecasts = {
-        1: "Год новых начинаний, инициатив и независимости",
-        2: "Год партнерства, сотрудничества и терпения",
-        3: "Год творчества, самовыражения и радости",
-        4: "Год труда, стабильности и построения основ",
-        5: "Год перемен, свободы и приключений",
-        6: "Год семьи, ответственности и гармонии",
-        7: "Год анализа, духовности и уединения",
-        8: "Год достижений, изобилия и власти",
-        9: "Год завершений, мудрости и трансформации",
-    }
+    # Добавляем рекомендации
+    text += "*Рекомендации:*\n"
+    text += "• Эти задачи — ваш путь к гармонии\n"
+    text += "• Каждое их выполнение приносит удовлетворение\n"
+    text += "• Обращайте внимание на повторяющиеся ситуации\n"
+
+    return text
+
+
+def daily_horoscope(matrix_data):
+    today = datetime.now().strftime("%d.%m.%Y")
+    current_day = datetime.now().day
+    current_month = datetime.now().month
     
-    return {
-        "personal_year": personal_year,
-        "forecast": forecasts.get(personal_year, "Особый год"),
-        "focus": "Действие" if personal_year in [1, 4, 7] else "Отношения" if personal_year in [2, 5, 8] else "Мудрость",
-        "challenge": "Импульсивность" if personal_year in [1, 5] else "Пассивность" if personal_year in [2, 7] else "Излишняя эмоциональность"
-    }
+    # Рассчитываем энергию дня
+    day_energy = (current_day + current_month) % 9 or 9
+    personal_energy = (day_energy + matrix_data["second"]) % 9 or 9
+    
+    # Берем описание для энергии дня
+    energy_desc = {
+        1: "новых начинаний и лидерства",
+        2: "гармонии и партнерства", 
+        3: "творчества и самовыражения",
+        4: "стабильности и труда",
+        5: "свободы и перемен",
+        6: "семьи и ответственности",
+        7: "интуиции и анализа",
+        8: "изобилия и власти",
+        9: "завершений и мудрости"
+    }.get(personal_energy, "особых возможностей")
+
+    return f"""
+✨ *ПЕРСОНАЛЬНЫЙ ПРОГНОЗ НА {today}*
+
+*Энергия дня:* {personal_energy} ({energy_desc})
+
+*Фокус внимания:* число {matrix_data['second']}
+*Кармическая проверка:* число {matrix_data['fourth']}
+
+*Что сегодня важно:*
+1. Проявляйте качества числа {matrix_data['second']}
+2. Обращайте внимание на ситуации, связанные с числом {matrix_data['fourth']}
+3. Доверяйте своей интуиции
+4. Действуйте осознанно
+
+*Совет дня:*
+Сегодняшняя энергия благоприятствует действиям в соответствии с вашей истинной природой. 
+Любое сопротивление будет ощущаться сильнее обычного.
+"""
