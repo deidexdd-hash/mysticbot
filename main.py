@@ -1,14 +1,17 @@
 import os
 import logging
-import json
-import time
 from datetime import datetime
 
-import requests
+import telebot
 
-# Ваши модули
-from matrix import calculate_matrix
-from horoscope import build_matrix_text, build_tasks_text, daily_horoscope
+from matrix import calculate_matrix, get_year_forecast
+from horoscope import (
+    build_personal_numbers_text,
+    build_matrix_text,
+    build_tasks_text,
+    daily_horoscope,
+    build_recommendations,
+)
 
 # Настройка логирования
 logging.basicConfig(
@@ -23,179 +26,178 @@ if not BOT_TOKEN:
     logger.error("BOT_TOKEN не задан в окружении!")
     exit(1)
 
-API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode='Markdown')
 
-def send_message(chat_id, text, parse_mode=None):
-    """Отправка сообщения"""
-    url = f"{API_URL}/sendMessage"
-    data = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode
-    }
-    
-    # Убираем None значения
-    if parse_mode is None:
-        del data["parse_mode"]
-    
-    response = requests.post(url, json=data, timeout=10)
-    return response.json()
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    welcome_text = """
+🔮 *ПЕРСОНАЛЬНЫЙ ОРАКУЛ: МАТРИЦА СУДЬБЫ*
 
-def split_long_text(text, max_length=4000):
-    """Разбивает длинный текст на части"""
-    if len(text) <= max_length:
-        return [text]
-    
-    parts = []
-    current_part = ""
-    
-    # Простой сплит по абзацам
-    paragraphs = text.split("\n\n")
-    
-    for paragraph in paragraphs:
-        if len(current_part) + len(paragraph) + 2 > max_length:
-            if current_part:
-                parts.append(current_part)
-            current_part = paragraph
+Я помогу рассчитать вашу персональную матрицу судьбы и дам подробную интерпретацию.
+
+*Доступные команды:*
+• Просто отправьте дату рождения в формате *ДД.ММ.ГГГГ*
+• Пример: *15.05.1990*
+• Или используйте /forecast для прогноза на год
+
+*Что вы получите:*
+1. Персональные числа судьбы
+2. Детальную матрицу с интерпретацией
+3. Кармические задачи
+4. Ежедневный гороскоп
+5. Персональные рекомендации
+
+Отправьте дату рождения для начала расчета...
+    """
+    bot.reply_to(message, welcome_text)
+
+@bot.message_handler(commands=['forecast'])
+def send_forecast(message):
+    try:
+        # Извлекаем год из сообщения
+        parts = message.text.split()
+        if len(parts) > 1:
+            target_year = int(parts[1])
+            date_parts = parts[2:] if len(parts) > 2 else []
         else:
-            if current_part:
-                current_part += "\n\n" + paragraph
-            else:
-                current_part = paragraph
-    
-    if current_part:
-        parts.append(current_part)
-    
-    return parts
+            target_year = datetime.now().year
+            date_parts = []
+        
+        if date_parts:
+            date_str = ' '.join(date_parts)
+        else:
+            bot.reply_to(message, "Пожалуйста, укажите дату рождения после года.\nПример: /forecast 2024 15.05.1990")
+            return
+        
+        # Проверяем дату
+        datetime.strptime(date_str, "%d.%m.%Y")
+        
+        # Получаем прогноз
+        forecast = get_year_forecast(date_str, target_year)
+        
+        forecast_text = f"""
+📅 *ПРОГНОЗ НА {target_year} ГОД*
 
-def send_photo(chat_id, photo_url, caption=None):
-    """Отправка фото по URL"""
-    url = f"{API_URL}/sendPhoto"
-    data = {
-        "chat_id": chat_id,
-        "photo": photo_url,
-        "parse_mode": "Markdown"
-    }
-    
-    if caption:
-        data["caption"] = caption[:1024]  # Ограничение Telegram
-    
-    try:
-        response = requests.post(url, json=data, timeout=30)
-        return response.json()
-    except Exception as e:
-        logger.error(f"Ошибка при отправке фото: {e}")
-        return None
+*Персональное число года:* {forecast['personal_year']}
+*Основная тема:* {forecast['forecast']}
+*Фокус года:* {forecast['focus']}
+*Вызов года:* {forecast['challenge']}
 
-def get_updates(offset=None):
-    """Получение обновлений"""
-    url = f"{API_URL}/getUpdates"
-    params = {
-        "timeout": 30,
-        "offset": offset,
-        "allowed_updates": ["message"]
-    }
-    
-    try:
-        response = requests.get(url, params=params, timeout=35)
-        return response.json().get("result", [])
-    except Exception as e:
-        logger.error(f"Ошибка при получении обновлений: {e}")
-        return []
+*Рекомендации на год:*
+• Концентрируйтесь на теме {forecast['focus']}
+• Учитесь преодолевать {forecast['challenge']}
+• Используйте энергию числа {forecast['personal_year']}
+• Будьте открыты переменам
 
-def process_update(update):
-    """Обработка обновления"""
-    if "message" not in update:
-        return None
-    
-    message = update["message"]
-    chat_id = message["chat"]["id"]
-    text = message.get("text", "").strip()
-    
-    if not text:
-        return update["update_id"]
-    
-    # Команда /start или /help
-    if text.lower() in ["/start", "/help"]:
-        send_message(
-            chat_id,
-            "🔮 *Персональный оракул*\n\n"
-            "Отправь дату рождения в формате:\n"
-            "*DD.MM.YYYY*\n\n"
-            "Например: *15.05.1990*",
-            parse_mode="Markdown"
-        )
-        return update["update_id"]
-    
-    # Обработка даты
-    try:
-        datetime.strptime(text, "%d.%m.%Y")
+*Благоприятные периоды:*
+• Весна: новые начинания
+• Лето: активные действия
+• Осень: подведение итогов
+• Зима: планирование будущего
+        """
         
-        # Рассчитываем матрицу
-        matrix_data = calculate_matrix(text)
-        
-        # Формируем текст
-        text_parts = [
-            f"📅 *Дата рождения:* {text}\n\n",
-            daily_horoscope(matrix_data),
-            "\n",
-            build_tasks_text(matrix_data),
-            "\n",
-            build_matrix_text(matrix_data)
-        ]
-        
-        full_text = "".join(text_parts)
-        
-        # Отправляем текст частями
-        text_parts_list = split_long_text(full_text)
-        for part in text_parts_list:
-            send_message(chat_id, part, parse_mode="Markdown")
-            time.sleep(0.5)  # Небольшая задержка между сообщениями
-        
-        # Отправляем изображение
-        image_url = "https://image.pollinations.ai/prompt/mystical%20tarot%20card%20digital%20art.png"
-        send_photo(
-            chat_id,
-            image_url,
-            caption="🎴 *Ваше персональное таро*\n\nЭто изображение сгенерировано специально для вас."
-        )
+        bot.reply_to(message, forecast_text)
         
     except ValueError:
-        send_message(
-            chat_id,
-            "❌ *Ошибка.*\nИспользуй формат *DD.MM.YYYY*\n\nПример: *15.05.1990*",
-            parse_mode="Markdown"
+        bot.reply_to(message, "❌ Неверный формат.\nИспользуйте: /forecast [год] ДД.ММ.ГГГГ\nПример: /forecast 2024 15.05.1990")
+    except Exception as e:
+        logger.error(f"Ошибка в прогнозе: {e}")
+        bot.reply_to(message, "❌ Произошла ошибка при расчете прогноза.")
+
+@bot.message_handler(func=lambda message: True)
+def handle_date(message):
+    try:
+        date_str = message.text.strip()
+        datetime.strptime(date_str, "%d.%m.%Y")
+        
+        # Рассчитываем матрицу
+        matrix_data = calculate_matrix(date_str)
+        
+        # Отправляем сообщение о начале расчета
+        processing_msg = bot.reply_to(message, "🔄 *Рассчитываю вашу матрицу судьбы...*")
+        
+        # Отправляем результаты по частям
+        try:
+            # Часть 1: Персональные числа
+            bot.send_message(
+                message.chat.id,
+                f"📅 *РАСЧЕТ МАТРИЦЫ СУДЬБЫ*\n*Дата рождения:* {date_str}\n"
+            )
+            
+            time.sleep(1)
+            
+            # Часть 2: Детальная информация
+            personal_numbers = build_personal_numbers_text(matrix_data)
+            bot.send_message(message.chat.id, personal_numbers)
+            
+            time.sleep(1)
+            
+            # Часть 3: Матрица
+            matrix_info = build_matrix_text(matrix_data)
+            bot.send_message(message.chat.id, matrix_info)
+            
+            time.sleep(1)
+            
+            # Часть 4: Кармические задачи
+            tasks_info = build_tasks_text(matrix_data)
+            bot.send_message(message.chat.id, tasks_info)
+            
+            time.sleep(1)
+            
+            # Часть 5: Гороскоп
+            horoscope = daily_horoscope(matrix_data)
+            bot.send_message(message.chat.id, horoscope)
+            
+            time.sleep(1)
+            
+            # Часть 6: Рекомендации
+            recommendations = build_recommendations(matrix_data)
+            bot.send_message(message.chat.id, recommendations)
+            
+            # Удаляем сообщение о расчете
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            
+            # Финальное сообщение
+            final_text = """
+✨ *РАСЧЕТ ЗАВЕРШЕН*
+
+Ваша матрица судьбы содержит уникальную информацию о вашем предназначении, кармических задачах и жизненном пути.
+
+*Что делать дальше:*
+1. Сохраните эту информацию
+2. Возвращайтесь к ней в важные моменты
+3. Используйте рекомендации в повседневной жизни
+4. Отслеживайте повторяющиеся ситуации
+
+Для прогноза на конкретный год используйте команду:
+/forecast [год] ДД.ММ.ГГГГ
+Пример: /forecast 2024 15.05.1990
+
+Желаю вам гармонии и осознанности на вашем пути! 🌟
+            """
+            bot.send_message(message.chat.id, final_text)
+            
+        except Exception as e:
+            logger.error(f"Ошибка при отправке сообщений: {e}")
+            # Если что-то пошло не так, отправляем хотя бы основную информацию
+            bot.send_message(
+                message.chat.id,
+                f"📅 *Дата рождения:* {date_str}\n\n"
+                f"{build_personal_numbers_text(matrix_data)}"
+            )
+            
+    except ValueError:
+        bot.reply_to(
+            message,
+            "❌ *Неверный формат даты*\n\n"
+            "Пожалуйста, используйте формат: *ДД.ММ.ГГГГ*\n"
+            "Пример: *15.05.1990*\n\n"
+            "Или используйте команду /help для справки."
         )
     except Exception as e:
-        logger.error(f"Ошибка при обработке даты: {e}")
-        send_message(chat_id, "❌ *Произошла ошибка при обработке запроса.*", parse_mode="Markdown")
-    
-    return update["update_id"]
-
-def main():
-    """Основной цикл бота"""
-    logger.info("Бот запущен...")
-    offset = None
-    
-    while True:
-        try:
-            updates = get_updates(offset)
-            
-            for update in updates:
-                last_update_id = process_update(update)
-                if last_update_id:
-                    offset = last_update_id + 1
-                
-                # Небольшая задержка между обработкой сообщений
-                time.sleep(0.1)
-            
-            # Если обновлений нет, ждем
-            if not updates:
-                time.sleep(1)
-                
-        except Exception as e:
-            logger.error(f"Ошибка в основном цикле: {e}")
-            time.sleep(5)
+        logger.error(f"Ошибка: {e}")
+        bot.reply_to(message, "❌ *Произошла ошибка при расчете*\nПожалуйста, попробуйте позже.")
 
 if __name__ == '__main__':
-    main()
+    logger.info("Бот запущен...")
+    bot.infinity_polling()
