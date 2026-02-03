@@ -1,11 +1,16 @@
 import os
-from fastapi import FastAPI, Request
+import logging
+from datetime import datetime
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
+    MessageHandler,
     ContextTypes,
+    filters,
 )
+
 from matrix import calculate_matrix
 from horoscope import (
     build_matrix_text,
@@ -13,20 +18,15 @@ from horoscope import (
     daily_horoscope,
 )
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 TOKEN = os.getenv("BOT_TOKEN")
-
-app = FastAPI()
-bot_app = ApplicationBuilder().token(TOKEN).build()
-
-
-@app.get("/")
-async def root():
-    return {"status": "Bot is running"}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет.\n\n"
+        "🔮 Персональный оракул\n\n"
         "Отправь дату рождения в формате:\n"
         "DD.MM.YYYY"
     )
@@ -35,6 +35,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         date_str = update.message.text.strip()
+        datetime.strptime(date_str, "%d.%m.%Y")
+
         matrix_data = calculate_matrix(date_str)
 
         text = (
@@ -45,26 +47,30 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + build_matrix_text(matrix_data)
         )
 
-        await update.message.reply_text(text, parse_mode="Markdown")
-
-    except Exception:
         await update.message.reply_text(
-            "Ошибка. Проверь формат даты: DD.MM.YYYY"
+            text,
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        logger.error(e)
+        await update.message.reply_text(
+            "❌ Ошибка.\nИспользуй формат DD.MM.YYYY"
         )
 
 
-bot_app.add_handler(CommandHandler("start", start))
-bot_app.add_handler(CommandHandler("help", start))
-bot_app.add_handler(CommandHandler("matrix", handle_date))
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", start))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date)
+    )
+
+    logger.info("Bot started")
+    app.run_polling(close_loop=False)
 
 
-@app.on_event("startup")
-async def startup():
-    await bot_app.initialize()
-    await bot_app.start()
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await bot_app.stop()
-    await bot_app.shutdown()
+if __name__ == "__main__":
+    main()
