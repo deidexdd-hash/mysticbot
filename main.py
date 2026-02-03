@@ -3,13 +3,7 @@ import logging
 from datetime import datetime
 
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
 from matrix import calculate_matrix
 from horoscope import (
@@ -32,16 +26,15 @@ if not TOKEN:
     exit(1)
 
 # --- Обработчики команд ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+def start(update: Update, context):
+    update.message.reply_text(
         "🔮 Персональный оракул\n\n"
         "Отправь дату рождения в формате:\n"
         "DD.MM.YYYY"
     )
 
-
 # --- Обработчик текста с датой ---
-async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_date(update: Update, context):
     try:
         date_str = update.message.text.strip()
         datetime.strptime(date_str, "%d.%m.%Y")
@@ -56,31 +49,32 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + build_matrix_text(matrix_data)
         )
 
-        await update.message.reply_text(
+        update.message.reply_text(
             text,
             parse_mode="Markdown"
         )
 
     except Exception as e:
         logger.error(f"Ошибка при обработке даты: {e}")
-        await update.message.reply_text(
+        update.message.reply_text(
             "❌ Ошибка.\nИспользуй формат DD.MM.YYYY"
         )
 
 
-# --- Основная функция запуска ---
-async def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+def main():
+    # Создаём Updater (старый синхронный API PTB 13.x)
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
 
     # Добавляем хэндлеры
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date))
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("help", start))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_date))
 
     logger.info("Бот запущен...")
-    await app.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
