@@ -3,9 +3,12 @@ import io
 import logging
 from datetime import datetime
 
-import requests
-from telegram import Update, InputFile
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+import httpx
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import InputFile
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from matrix import calculate_matrix
 from horoscope import (
@@ -15,45 +18,52 @@ from horoscope import (
 )
 
 # --- Настройка логирования ---
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Токен бота ---
-TOKEN = os.getenv("BOT_TOKEN")
-if not TOKEN:
+# --- Токен ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
     logger.error("BOT_TOKEN не задан в окружении!")
     exit(1)
 
-# --- Обработчики команд ---
-def start(update: Update, context):
-    update.message.reply_text(
+# --- Инициализация бота и диспетчера ---
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+
+# --- Обработчик команды /start ---
+@dp.message(Command(commands=["start", "help"]))
+async def cmd_start(message: types.Message):
+    await message.answer(
         "🔮 Персональный оракул\n\n"
         "Отправь дату рождения в формате:\n"
         "DD.MM.YYYY"
     )
 
+
 # --- Функция безопасной отправки изображения ---
-def send_image_safely(update: Update, image_url: str, caption: str = ""):
+async def send_image_safely(message: types.Message, url: str, caption: str = ""):
     try:
-        resp = requests.get(image_url, timeout=10)
-        resp.raise_for_status()
-        image_bytes = io.BytesIO(resp.content)
-        image_bytes.name = "image.png"  # Telegram требует имя файла
-        update.message.reply_photo(photo=InputFile(image_bytes), caption=caption)
-    except requests.RequestException as e:
-        logger.error(f"Ошибка загрузки изображения: {e}")
-        update.message.reply_text("❌ Не удалось загрузить изображение. Попробуйте позже.")
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            image_bytes = io.BytesIO(resp.content)
+            image_bytes.name = "image.png"
+            await message.answer_photo(photo=InputFile(image_bytes), caption=caption)
+    except httpx.RequestError as e:
+        logger.error(f"Ошибка запроса изображения: {e}")
+        await message.answer("❌ Не удалось соединиться с сервером изображений.")
     except Exception as e:
         logger.error(f"Ошибка при отправке изображения: {e}")
-        update.message.reply_text("❌ Произошла ошибка при обработке изображения.")
+        await message.answer("❌ Произошла ошибка при обработке изображения.")
+
 
 # --- Обработчик текста с датой ---
-def handle_date(update: Update, context):
+@dp.message()
+async def handle_date(message: types.Message):
     try:
-        date_str = update.message.text.strip()
+        date_str = message.text.strip()
         datetime.strptime(date_str, "%d.%m.%Y")
 
         matrix_data = calculate_matrix(date_str)
@@ -66,35 +76,25 @@ def handle_date(update: Update, context):
             + build_matrix_text(matrix_data)
         )
 
-        update.message.reply_text(
-            text,
-            parse_mode="Markdown"
-        )
+        await message.answer(text)
 
-        # Пример отправки изображения
+        # Пример безопасной отправки изображения
         image_url = "https://image.pollinations.ai/prompt/mystical%20tarot%20card.png"
-        send_image_safely(update, image_url, caption="Вот ваш прогноз 🔮")
+        await send_image_safely(message, image_url, caption="Вот ваш прогноз 🔮")
 
+    except ValueError:
+        await message.answer("❌ Ошибка.\nИспользуй формат DD.MM.YYYY")
     except Exception as e:
         logger.error(f"Ошибка при обработке даты: {e}")
-        update.message.reply_text(
-            "❌ Ошибка.\nИспользуй формат DD.MM.YYYY"
-        )
+        await message.answer("❌ Произошла ошибка при обработке запроса.")
 
-def main():
-    # Создаём Updater (старый синхронный API PTB 13.x)
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
 
-    # Добавляем хэндлеры
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_date))
-
+# --- Основная функция запуска ---
+async def main():
     logger.info("Бот запущен...")
-    updater.start_polling()
-    updater.idle()
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
