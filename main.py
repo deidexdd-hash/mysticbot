@@ -1,7 +1,6 @@
 import os
 import logging
 from datetime import datetime
-import asyncio
 
 from telegram import Update
 from telegram.ext import (
@@ -32,8 +31,7 @@ if not TOKEN:
     logger.error("BOT_TOKEN не задан в окружении!")
     exit(1)
 
-
-# --- Обработчик команды /start и /help ---
+# --- Обработчики команд ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔮 Персональный оракул\n\n"
@@ -70,11 +68,11 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# --- Основная функция запуска бота ---
+# --- Основная функция запуска ---
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Хэндлеры
+    # Добавляем хэндлеры
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date))
@@ -83,6 +81,6 @@ async def main():
     await app.run_polling()
 
 
-# --- Точка входа ---
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
