@@ -1,159 +1,80 @@
 import asyncio
-import logging
 import os
-import sys
+import re
 import json
 import random
 from datetime import datetime, date
-from typing import List, Optional
-from urllib.parse import quote
+from pathlib import Path
+from typing import Dict, List
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton,
     BufferedInputFile
 )
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.state import StatesGroup, State
 
-from aiohttp import web
 from dotenv import load_dotenv
 from groq import AsyncGroq
 import httpx
-from bs4 import BeautifulSoup
 
-# ─────────────────────────────────────────────
-# ENV / INIT
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────
+# INIT
+# ─────────────────────────────────────
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-PORT = int(os.getenv("PORT", 10000))
 
-if not TOKEN or not GROQ_API_KEY:
-    sys.exit("❌ BOT_TOKEN или GROQ_API_KEY не найдены")
+if not BOT_TOKEN or not GROQ_API_KEY:
+    raise RuntimeError("❌ BOT_TOKEN / GROQ_API_KEY не заданы")
 
-bot = Bot(token=TOKEN)
+bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 groq = AsyncGroq(api_key=GROQ_API_KEY)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ─────────────────────────────────────
+# CACHE (in-memory)
+# ─────────────────────────────────────
+CACHE: Dict[str, Dict] = {}
 
-DB_FILE = "users_data.json"
+# ─────────────────────────────────────
+# LOAD values.tsx.txt
+# ─────────────────────────────────────
+def load_ts_object(raw: str, name: str) -> dict:
+    pattern = rf"{name}\s*=\s*({{[\s\S]*?}})"
+    match = re.search(pattern, raw)
+    if not match:
+        raise ValueError(f"{name} не найден в values.tsx.txt")
 
-# ─────────────────────────────────────────────
-# DATABASE
-# ─────────────────────────────────────────────
-def load_db():
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    obj = match.group(1)
+    obj = re.sub(r"(\w+):", r'"\1":', obj)
+    obj = obj.replace("'", '"')
+    return json.loads(obj)
 
-def save_db(data):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def load_values():
+    raw = Path("values.tsx.txt").read_text(encoding="utf-8")
+    return {
+        "matrix": load_ts_object(raw, "MATRIX_VALUES"),
+        "tasks": load_ts_object(raw, "TASKS")
+    }
 
-# ─────────────────────────────────────────────
-# MATRIX INTERPRETATIONS (PRODUCTION)
-# ─────────────────────────────────────────────
-MATRIX_VALUES = {
-    "10": {
-        "title": "Характер",
-        "male": "Подавленное эго. Важно учиться отстаивать себя.",
-        "female": "Склонность жертвовать собой. Нужны личные границы."
-    },
-    "1": {
-        "title": "Характер",
-        "male": "Сильное эго, лидерская энергия. Важно не давить на других.",
-        "female": "Мягкость, интуиция. Важно проживать эмоции."
-    },
-    "11": {
-        "title": "Характер",
-        "male": "Много страхов, сильная связь с матерью.",
-        "female": "Семейность, уступчивость."
-    },
-    "111": {
-        "title": "Характер",
-        "male": "Надёжный, но нуждается в стимуле.",
-        "female": "Мудрость, сильная интуиция."
-    },
-    "1111": {
-        "title": "Характер",
-        "male": "Лидер, дипломат.",
-        "female": "Сильный характер, карьеристка."
-    },
+CACHE = load_values()
 
-    "20": {
-        "title": "Энергия",
-        "male": "Энергетический дефицит. Нужны спорт и природа.",
-        "female": "Истощение энергии, важно наполнение."
-    },
-    "2": {
-        "title": "Энергия",
-        "male": "Энергия нестабильна.",
-        "female": "Тонкая энергетика."
-    },
-    "22": {
-        "title": "Энергия",
-        "male": "Донор энергии.",
-        "female": "Высокий ресурс, долгожительство."
-    },
+MATRIX_VALUES = CACHE["matrix"]
+TASKS = CACHE["tasks"]
 
-    "40": {
-        "title": "Здоровье",
-        "male": "Нет врожденного ресурса. Контроль тела обязателен.",
-        "female": "Риски по здоровью и репродукции."
-    },
-    "4": {
-        "title": "Здоровье",
-        "male": "Стабильное здоровье.",
-        "female": "Ресурс есть, но нельзя копить обиды."
-    },
-    "44": {
-        "title": "Здоровье",
-        "male": "Крепкий организм.",
-        "female": "Сильная родовая энергия."
-    },
+# ─────────────────────────────────────
+# MATRIX CALC (1:1 App.tsx)
+# ─────────────────────────────────────
+def split_int(v): return [int(x) for x in str(v).replace(".", "")]
+def string_sum(v): return sum(map(int, str(v)))
 
-    "80": {
-        "title": "Род",
-        "male": "Нарушена связь с родом. Претензии к родителям запрещены.",
-        "female": "Свободолюбие, важно принять род."
-    },
-    "8": {
-        "title": "Род",
-        "male": "Ответственность за материальное благополучие рода.",
-        "female": "Служение семье, объединение рода."
-    },
-
-    "9": {
-        "title": "Интеллект",
-        "male": "Память требует тренировки.",
-        "female": "Интуитивный ум."
-    },
-    "99": {
-        "title": "Интеллект",
-        "male": "Аналитический склад ума.",
-        "female": "Хорошая память и обучаемость."
-    },
-}
-
-# ─────────────────────────────────────────────
-# MATRIX CALCULATION (1:1 App.tsx)
-# ─────────────────────────────────────────────
-def split_int(value) -> List[int]:
-    return [int(x) for x in str(value).replace('.', '')]
-
-def string_sum(number: int) -> int:
-    return sum(int(d) for d in str(number))
-
-def calculate_matrix(birthdate: str):
-    nums = split_int(birthdate)
-    dt = datetime.strptime(birthdate, "%d.%m.%Y")
+def calculate_matrix(birth: str) -> List[int]:
+    nums = split_int(birth)
+    dt = datetime.strptime(birth, "%d.%m.%Y")
 
     first = sum(nums)
     second = string_sum(first)
@@ -161,73 +82,97 @@ def calculate_matrix(birthdate: str):
     if dt.year >= 2000:
         third = first + 19
     else:
-        day_digits = split_int(dt.day)
-        subtractor = day_digits[0] if day_digits[0] != 0 else day_digits[1]
-        third = first - subtractor * 2
+        day = split_int(dt.day)
+        third = first - (day[0] if day[0] else day[1]) * 2
 
     fourth = string_sum(third)
 
-    full_array = nums + split_int(first) + split_int(second) + split_int(third) + split_int(fourth)
+    fa = (
+        nums +
+        split_int(first) +
+        split_int(second) +
+        split_int(third) +
+        split_int(fourth)
+    )
+
     if dt.year >= 2000:
-        full_array += [1, 9]
+        fa += [1, 9]
 
-    return full_array
+    return fa
 
-def get_matrix_value(num: int, fa: List[int], gender: str) -> str:
+# ─────────────────────────────────────
+# INTERPRETATION
+# ─────────────────────────────────────
+def extract_gender(text: str, gender: str) -> str:
+    if "Мужчины:" in text and "Женщины:" in text:
+        m, f = text.split("Женщины:")
+        m = m.replace("Мужчины:", "").strip()
+        f = f.strip()
+        return m if gender == "мужской" else f
+    return text
+
+def get_matrix_value(num: int, fa: list[int], gender: str) -> str:
     count = fa.count(num)
+
     if count == 0:
         key = f"{num}0"
     elif count > 5:
-        key = str(num) * (count - 5)
+        key = str(num) * 5
     else:
         key = str(num) * count
 
-    data = MATRIX_VALUES.get(key)
-    if not data:
+    item = MATRIX_VALUES.get(key)
+    if not item:
         return "—"
 
-    return data["male"] if gender == "мужской" else data["female"]
+    return extract_gender(item["text"], gender)
 
-# ─────────────────────────────────────────────
+def get_task(num: int) -> str:
+    item = TASKS.get(str(num))
+    if not item:
+        return "—"
+    return item["text"]
+
+# ─────────────────────────────────────
 # FSM
-# ─────────────────────────────────────────────
-class States(StatesGroup):
+# ─────────────────────────────────────
+class UserState(StatesGroup):
     date = State()
     gender = State()
 
-# ─────────────────────────────────────────────
-# START
-# ─────────────────────────────────────────────
-@dp.message(Command("start"))
-async def start(message: types.Message, state: FSMContext):
-    await message.answer("Введите дату рождения (ДД.ММ.ГГГГ):")
-    await state.set_state(States.date)
+USERS = {}
 
-@dp.message(States.date)
-async def set_date(message: types.Message, state: FSMContext):
+# ─────────────────────────────────────
+# START
+# ─────────────────────────────────────
+@dp.message(Command("start"))
+async def start(msg: types.Message, state: FSMContext):
+    await msg.answer("Введите дату рождения (ДД.ММ.ГГГГ):")
+    await state.set_state(UserState.date)
+
+@dp.message(UserState.date)
+async def set_date(msg: types.Message, state: FSMContext):
     try:
-        datetime.strptime(message.text, "%d.%m.%Y")
-        await state.update_data(date=message.text)
+        datetime.strptime(msg.text, "%d.%m.%Y")
+        await state.update_data(date=msg.text)
         kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="М", callback_data="g_m"),
-            InlineKeyboardButton(text="Ж", callback_data="g_f")
+            InlineKeyboardButton(text="Мужской", callback_data="g_m"),
+            InlineKeyboardButton(text="Женский", callback_data="g_f"),
         ]])
-        await message.answer("Ваш пол:", reply_markup=kb)
-        await state.set_state(States.gender)
+        await msg.answer("Выберите пол:", reply_markup=kb)
+        await state.set_state(UserState.gender)
     except:
-        await message.answer("Неверный формат. Пример: 21.03.1992")
+        await msg.answer("❌ Неверный формат. Пример: 21.03.1992")
 
 @dp.callback_query(F.data.startswith("g_"))
 async def set_gender(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     gender = "мужской" if cb.data == "g_m" else "женский"
 
-    db = load_db()
-    db[str(cb.from_user.id)] = {
+    USERS[cb.from_user.id] = {
         "date": data["date"],
         "gender": gender
     }
-    save_db(db)
 
     await cb.message.answer(
         "Готово. Выберите действие:",
@@ -241,17 +186,20 @@ async def set_gender(cb: types.CallbackQuery, state: FSMContext):
     )
     await state.clear()
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────
 # MATRIX OUTPUT
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────
 @dp.message(F.text == "🔢 Матрица судьбы")
-async def matrix(message: types.Message):
-    user = load_db().get(str(message.from_user.id))
-    if not user:
+async def matrix(msg: types.Message):
+    u = USERS.get(msg.from_user.id)
+    if not u:
         return
 
-    fa = calculate_matrix(user["date"])
-    g = user["gender"]
+    fa = calculate_matrix(u["date"])
+    g = u["gender"]
+
+    second = string_sum(sum(split_int(u["date"])))
+    fourth = string_sum(string_sum(sum(split_int(u["date"]))))
 
     text = f"""
 🔢 **Матрица судьбы**
@@ -270,24 +218,30 @@ async def matrix(message: types.Message):
 
 📚 **Интеллект**
 {get_matrix_value(9, fa, g)}
-"""
-    await message.answer(text, parse_mode="Markdown")
 
-# ─────────────────────────────────────────────
+🧭 **Личная задача души**
+{get_task(second)}
+
+🌿 **Родовая задача**
+{get_task(fourth)}
+"""
+    await msg.answer(text, parse_mode="Markdown")
+
+# ─────────────────────────────────────
 # DAILY FORECAST
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────
 @dp.message(F.text == "🔮 Прогноз на день")
-async def forecast(message: types.Message):
-    user = load_db().get(str(message.from_user.id))
-    if not user:
+async def forecast(msg: types.Message):
+    u = USERS.get(msg.from_user.id)
+    if not u:
         return
 
-    status = await message.answer("🔮 Считываю поле дня...")
+    status = await msg.answer("🔮 Считываю поле дня...")
 
-    fa = calculate_matrix(user["date"])
-    g = user["gender"]
+    fa = calculate_matrix(u["date"])
+    g = u["gender"]
 
-    birth = datetime.strptime(user["date"], "%d.%m.%Y").date()
+    birth = datetime.strptime(u["date"], "%d.%m.%Y").date()
     age = date.today().year - birth.year
 
     prompt = f"""
@@ -301,17 +255,19 @@ async def forecast(message: types.Message):
 Род: {get_matrix_value(8, fa, g)}
 Здоровье: {get_matrix_value(4, fa, g)}
 
-Составь детальный мистический прогноз дня:
+Личная задача: {get_task(string_sum(sum(split_int(u["date"]))))}
+Родовая задача: {get_task(string_sum(string_sum(sum(split_int(u["date"])))))} 
 
-🔮 Фон дня  
-❤️ Отношения  
-💼 Работа и деньги  
-⚠️ Риски  
-🧿 Совет матрицы  
+Составь детальный мистический прогноз:
+🔮 Фон дня
+❤️ Отношения
+💼 Работа и деньги
+⚠️ Риски
+🧿 Совет матрицы
 
-Без общих фраз.
+Без воды.
 В конце добавь:
-IMAGE_PROMPT: mystical tarot card, dark gold, high detail
+IMAGE_PROMPT: mystical tarot card, dark gold, ultra detailed
 """
 
     res = await groq.chat.completions.create(
@@ -322,32 +278,24 @@ IMAGE_PROMPT: mystical tarot card, dark gold, high detail
     text = res.choices[0].message.content
 
     if "IMAGE_PROMPT:" in text:
-        text, img = text.split("IMAGE_PROMPT:")
-        url = f"https://image.pollinations.ai/prompt/{quote(img.strip())}?width=800&height=1000&nologo=true&seed={random.randint(1,999)}"
-        async with httpx.AsyncClient() as client:
-            img_bytes = (await client.get(url)).content
-        await message.answer_photo(
+        body, img = text.split("IMAGE_PROMPT:")
+        url = f"https://image.pollinations.ai/prompt/{img.strip()}?width=800&height=1000&seed={random.randint(1,999)}"
+        async with httpx.AsyncClient() as c:
+            img_bytes = (await c.get(url)).content
+
+        await msg.answer_photo(
             BufferedInputFile(img_bytes, "day.jpg"),
-            caption=text[:1024],
+            caption=body[:1024],
             parse_mode="Markdown"
         )
         await status.delete()
     else:
-        await status.edit_text(text, parse_mode="Markdown")
+        await status.edit_text(text)
 
-# ─────────────────────────────────────────────
-# WEB SERVER
-# ─────────────────────────────────────────────
-async def web_handle(request):
-    return web.Response(text="Bot is live")
-
+# ─────────────────────────────────────
+# RUN
+# ─────────────────────────────────────
 async def main():
-    app = web.Application()
-    app.router.add_get("/", web_handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", PORT).start()
-
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
