@@ -1,0 +1,316 @@
+import React, { useEffect, useState } from 'react';
+import './App.css';
+import { Container, Stack, TextField, Typography } from "@mui/material";
+import { indigo } from '@mui/material/colors';
+import moment from "moment";
+import { matrix, tasks } from "./values";
+
+function App() {
+  const [date, setDate] = useState('');
+  const [yearDate, setYearDate] = useState(0);
+  const [secondNumber, setSecondNumber] = useState('');
+  const [fourthNumber, setFourthNumber] = useState('');
+  const [numberArray, setNumberArray] = useState<number[]>([]);
+  const [fullArray, setFullArray] = useState<number[]>([]);
+  const [error, setError] = useState('');
+
+  const stringSum = (number: number) => number.toString().split('').reduce(
+    (accumulator, currentValue) => accumulator + parseInt(currentValue, 10),
+    0
+  );
+
+  const splitInt = (value: string | number) => value
+    .toString()
+    .replace(/\./g, '')
+    .split('')
+    .map(x => parseInt(x));
+
+  const getMatrixValue = (number: number) => {
+    if (!fullArray.length) {
+      return '—';
+    }
+    const filteredArray = fullArray.filter(x => x === number);
+    let valueString;
+    if (filteredArray.length > 5) {
+      valueString = filteredArray.slice(5).join('');
+    } else if (filteredArray.length === 0) {
+      valueString = `${number}0`;
+    } else {
+      valueString = filteredArray.join('');
+    }
+    return matrix[valueString] || '—'
+  }
+
+  useEffect(() => {
+    if (date) {
+      const formattedDate = moment(date).format('DD.MM.YYYY');
+      const year = parseInt(moment(date).format('YYYY'));
+      setYearDate(year);
+      const numbers = splitInt(formattedDate);
+      const first = numbers.reduce(
+        (accumulator, currentValue) => accumulator + currentValue,
+        0
+      );
+      const second = stringSum(first);
+      const third = year >= 2000
+        ? first + 19
+        : first - ((numbers[0] !== 0 ? numbers[0] : numbers[1]) * 2);
+      const fourth = stringSum(third);
+      if (year >= 2000) {
+        setNumberArray([first, second, 19, third, fourth]);
+        setFullArray([...numbers, ...splitInt(first), ...splitInt(second), ...splitInt(19), ...splitInt(third), ...splitInt(fourth)]);
+      } else {
+        setNumberArray([first, second, third, fourth]);
+        setFullArray([...numbers, ...splitInt(first), ...splitInt(second), ...splitInt(third), ...splitInt(fourth)]);
+      }
+      setSecondNumber(second.toString());
+      setFourthNumber(fourth.toString());
+    }
+  }, [date])
+
+  return (
+    <>
+      <Container maxWidth="sm" sx={{my: 4}}>
+        <Stack spacing={2}>
+          <Typography variant="h6" component="div">
+            Дата рождения
+          </Typography>
+          <TextField
+            id="date"
+            type="date"
+            value={date}
+            onChange={e => {
+              setDate(e.target.value);
+              setError(e.target.validationMessage);
+            }}
+            variant="standard"
+            error={!!error}
+            helperText={error}
+          />
+          <Typography variant="h6">
+            Доп. числа:
+            <Typography variant="body1" component="span" sx={{color: indigo["500"], ml: 1}}>
+              {numberArray.join('.')}
+            </Typography>
+          </Typography>
+          <Typography variant="h6" component="div">
+            Матрица
+          </Typography>
+          <table className="matrix-table">
+            <tbody>
+            <tr>
+              <td>
+                <div className="matrix-cell">
+                  <div className="matrix-item">
+                    {fullArray.filter(x => x === 1).join(' ') || '—'}
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div className="matrix-cell">
+                  <div className="matrix-item">
+                    {fullArray.filter(x => x === 4).join(' ') || '—'}
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div className="matrix-cell">
+                  <div className="matrix-item">
+                    {fullArray.filter(x => x === 7).join(' ') || '—'}
+                  </div>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div className="matrix-cell">
+                  <div className="matrix-item">
+                    {fullArray.filter(x => x === 2).join(' ') || '—'}
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div className="matrix-cell">
+                  <div className="matrix-item">
+                    {fullArray.filter(x => x === 5).join(' ') || '—'}
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div className="matrix-cell">
+                  <div className="matrix-item">
+                    {fullArray.filter(x => x === 8).join(' ') || '—'}
+                  </div>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div className="matrix-cell">
+                  <div className="matrix-item">
+                    {fullArray.filter(x => x === 3).join(' ') || '—'}
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div className="matrix-cell">
+                  <div className="matrix-item">
+                    {fullArray.filter(x => x === 6).join(' ') || '—'}
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div className="matrix-cell">
+                  <div className="matrix-item">
+                    {fullArray.filter(x => x === 9).join(' ') || '—'}
+                    {yearDate >= 2020 ? ' 9' : null}
+                  </div>
+                </div>
+              </td>
+            </tr>
+            </tbody>
+          </table>
+        </Stack>
+      </Container>
+      {!!fullArray.length && (
+        <Container maxWidth="md" sx={{my: 4}}>
+          <Stack spacing={2}>
+            <Typography variant="h6" component="div">
+              Личная задача Души
+            </Typography>
+            <Typography variant="body1" className="value-text">
+              {secondNumber ? tasks[secondNumber] : null}
+            </Typography>
+            <Typography variant="h6" component="div">
+              Родовая задача. ЧРП
+            </Typography>
+            <Typography variant="body1" className="value-text">
+              {fourthNumber ? tasks[fourthNumber] : null}
+            </Typography>
+            <Typography variant="h6" component="div">
+              Значения матрицы
+            </Typography>
+            <div>
+              <Typography variant="subtitle1" component="div">
+                <strong>Значение цифры 1</strong>
+              </Typography>
+              <Typography variant="body1" sx={{mb: 2}}>
+                ЭГО, самость, сила характера и амбиций.<br/>
+                Для мужчин: когда в родовой системе все в порядке считается - 1111<br/>
+                Для женщин - 111
+              </Typography>
+              <Typography className="value-text" variant="body1" sx={{mb: 2}}>
+                {getMatrixValue(1)}
+              </Typography>
+            </div>
+            <div>
+              <Typography variant="subtitle1" component="div">
+                <strong>Значение цифры 2</strong>
+              </Typography>
+              <Typography variant="body1" sx={{mb: 2}}>
+                энергия и лень одновременно <br/>
+                Идеальный показатель 22 или 2222 двойки.
+              </Typography>
+              <Typography className="value-text" variant="body1" sx={{mb: 2}}>
+                {getMatrixValue(2)}
+              </Typography>
+            </div>
+            <div>
+              <Typography variant="subtitle1" component="div">
+                <strong>Значение цифры 3</strong>
+              </Typography>
+              <Typography variant="body1" sx={{mb: 2}}>
+                креативность, творчество, материалистичность
+              </Typography>
+              <Typography className="value-text" variant="body1" sx={{mb: 2}}>
+                {getMatrixValue(3)}
+              </Typography>
+            </div>
+            <div>
+              <Typography variant="subtitle1" component="div">
+                <strong>Значение цифры 4</strong>
+              </Typography>
+              <Typography variant="body1" sx={{mb: 2}}>
+                здоровье, сексуальная энергия, чувство вне себя, деньги, деторождение; <br/>
+                Четверки - это право на продолжение Рода.
+              </Typography>
+              <Typography className="value-text" variant="body1" sx={{mb: 2}}>
+                {getMatrixValue(4)}
+              </Typography>
+            </div>
+            <div>
+              <Typography variant="subtitle1" component="div">
+                <strong>Значение цифры 5</strong>
+              </Typography>
+              <Typography variant="body1" sx={{mb: 2}}>
+                баланс мужской и женской энергии в теле
+              </Typography>
+              <Typography className="value-text" variant="body1" sx={{mb: 2}}>
+                {getMatrixValue(5)}
+              </Typography>
+            </div>
+            <div>
+              <Typography variant="subtitle1" component="div">
+                <strong>Значение цифры 6</strong>
+              </Typography>
+              <Typography variant="body1" sx={{mb: 2}}>
+                умение манипулировать и умение работать руками <br/>
+                Шестерки - это цифра, которая отвечает за умение манипулировать. За умение управлять
+                другими людьми. Часто про нее нумерологии говорят, что это «труд». Я бы так не сказала, потому
+                что эти люди они в принципе просто прекрасно манипулируют. И это умение, скажем так-
+                подруливать другими людьми.
+              </Typography>
+              <Typography className="value-text" variant="body1" sx={{mb: 2}}>
+                {getMatrixValue(6)}
+              </Typography>
+            </div>
+            <div>
+              <Typography variant="subtitle1" component="div">
+                <strong>Значение цифры 7</strong>
+              </Typography>
+              <Typography variant="body1" sx={{mb: 2}}>
+                родовая энергия удачи, фортуны, наличие сильного ангела хранителя, фортуна,
+                помощь высших сил <br/>
+                это связь с Родовой системой и связь с каналом Удачи и с потоком Удачи.
+              </Typography>
+              <Typography className="value-text" variant="body1" sx={{mb: 2}}>
+                {getMatrixValue(7)}
+              </Typography>
+            </div>
+            <div>
+              <Typography variant="subtitle1" component="div">
+                <strong>Значение цифры 8</strong>
+              </Typography>
+              <Typography variant="body1" sx={{mb: 2}}>
+                Служение, насыщение других людей, служение себе, людям, семье <br/>
+                Восьмерка - это родовая история. Она присоединена к семейному роду, к роду в котором человек родился и к
+                которому он относится.
+              </Typography>
+              <Typography className="value-text" variant="body1" sx={{mb: 2}}>
+                {getMatrixValue(8)}
+              </Typography>
+            </div>
+            <div>
+              <Typography variant="subtitle1" component="div">
+                <strong>Значение цифры 9</strong>
+              </Typography>
+              <Typography variant="body1" sx={{mb: 2}}>
+                память, наличие психологических и экстрасенсорных способностей <br/>
+                Девятки – это родовой поток памяти, памяти которая будет связанна именно с родовой
+                системой. Я знаю что другие специалисты просто называют девятки «память». Я бы так не сказала
+                потому, что родовые болезни типа «Альцгеймера», типа «деменция» они присоединены к этому
+                показателю, показателю и соответственно можно сказать? что родовой поток памяти здесь так же
+                имеет место быть.
+              </Typography>
+              <Typography className="value-text" variant="body1" sx={{mb: 2}}>
+                {getMatrixValue(9)}
+              </Typography>
+            </div>
+          </Stack>
+        </Container>
+      )}
+    </>
+  );
+}
+
+export default App;
