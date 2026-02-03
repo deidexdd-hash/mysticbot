@@ -1,6 +1,7 @@
 import os
 import logging
 from datetime import datetime
+import asyncio
 
 from telegram import Update
 from telegram.ext import (
@@ -18,12 +19,21 @@ from horoscope import (
     daily_horoscope,
 )
 
-logging.basicConfig(level=logging.INFO)
+# --- Настройка логирования ---
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
+# --- Токен бота ---
 TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    logger.error("BOT_TOKEN не задан в окружении!")
+    exit(1)
 
 
+# --- Обработчик команды /start и /help ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔮 Персональный оракул\n\n"
@@ -32,6 +42,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# --- Обработчик текста с датой ---
 async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         date_str = update.message.text.strip()
@@ -53,24 +64,25 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
-        logger.error(e)
+        logger.error(f"Ошибка при обработке даты: {e}")
         await update.message.reply_text(
             "❌ Ошибка.\nИспользуй формат DD.MM.YYYY"
         )
 
 
-def main():
+# --- Основная функция запуска бота ---
+async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Хэндлеры
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date)
-    )
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date))
 
-    logger.info("Bot started")
-    app.run_polling(close_loop=False)
+    logger.info("Бот запущен...")
+    await app.run_polling()
 
 
+# --- Точка входа ---
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
